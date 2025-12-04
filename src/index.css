@@ -1,0 +1,150 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-50 text-gray-900;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
+      'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+}
+
+@layer components {
+  .glass-effect {
+    @apply bg-white/70 backdrop-blur-md border border-white/20 shadow-xl;
+  }
+  
+  .button-primary {
+    @apply px-4 py-2 bg-gradient-to-r from-blue-500 to-indigo-600 text-white rounded-lg
+           font-medium shadow-lg hover:shadow-xl transform hover:scale-105 
+           transition-all duration-200 active:scale-95;
+  }
+  
+  .button-secondary {
+    @apply px-4 py-2 bg-white/80 backdrop-blur-sm text-gray-700 rounded-lg
+           font-medium border border-gray-200 hover:bg-white hover:shadow-lg
+           transform hover:scale-105 transition-all duration-200 active:scale-95;
+  }
+  
+  .card {
+    @apply glass-effect rounded-2xl p-6 animate-fade-in;
+  }
+  
+  .input-field {
+    @apply w-full px-4 py-2 bg-white/50 border border-gray-200 rounded-lg
+           focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent
+           transition-all duration-200 backdrop-blur-sm;
+  }
+  
+  .section-title {
+    @apply text-2xl font-bold bg-gradient-to-r from-blue-600 to-indigo-600 
+           bg-clip-text text-transparent mb-4;
+  }
+}
+
+@layer utilities {
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  
+  .scrollbar-thin::-webkit-scrollbar-track {
+    @apply bg-transparent;
+  }
+  
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    @apply bg-gray-300 rounded-full hover:bg-gray-400;
+  }
+}
+
+/* Print styles */
+@media print {
+  body {
+    @apply bg-white;
+  }
+  
+  .no-print {
+    display: none !important;
+  }
+  
+  .resume-preview > div {
+    box-shadow: none !important;
+    border-radius: 0 !important;
+    margin: 0 !important;
+  }
+}
+
+/* Resume Template Styles */
+.resume-template-content {
+  width: 210mm;
+  min-height: 297mm;
+}
+
+.resume-section {
+  page-break-inside: avoid;
+  break-inside: avoid;
+  position: relative;
+}
+
+/* 防止标题被裁切 - 标题和下面的内容保持在一起 */
+.resume-template-content h1,
+.resume-template-content h2,
+.resume-template-content h3 {
+  page-break-after: avoid;
+  break-after: avoid;
+  page-break-inside: avoid;
+  break-inside: avoid;
+  margin-bottom: 0.5em;
+}
+
+/* 标题后的第一个元素不要在页面顶部孤立 */
+.resume-template-content h1 + *,
+.resume-template-content h2 + *,
+.resume-template-content h3 + * {
+  page-break-before: avoid;
+  break-before: avoid;
+}
+
+/* 防止所有重要元素被裁切 */
+.resume-template-content p,
+.resume-template-content h4,
+.resume-template-content h5,
+.resume-template-content h6,
+.resume-template-content li,
+.resume-template-content div[class*="mb-"],
+.resume-template-content div[class*="mt-"] {
+  page-break-inside: avoid;
+  break-inside: avoid;
+  orphans: 3;
+  widows: 3;
+}
+
+/* PDF generation styles */
+.pdf-generating .resume-preview > div {
+  height: auto !important;
+  overflow: visible !important;
+}
+
+/* Custom animations */
+@keyframes shimmer {
+  0% {
+    background-position: -1000px 0;
+  }
+  100% {
+    background-position: 1000px 0;
+  }
+}
+
+.shimmer {
+  animation: shimmer 2s infinite linear;
+  background: linear-gradient(
+    to right,
+    transparent 0%,
+    rgba(255, 255, 255, 0.6) 50%,
+    transparent 100%
+  );
+  background-size: 1000px 100%;
+}
