@@ -1,98 +1,113 @@
 import html2canvas from 'html2canvas';
 import jsPDF from 'jspdf';
 
-/** 下载简历为 PDF - 智能分页，避免内容被裁切 */
+/**
+ * 下载简历为 PDF - 基于多页面架构
+ * 逐页截图并合并成多页PDF
+ */
 export const downloadPDF = async (filename: string = 'resume') => {
-  const element = document.querySelector('.resume-preview > div') as HTMLElement;
-  if (!element) {
-    throw new Error('Resume preview element not found');
+  // 获取所有 A4 页面元素
+  const pages = document.querySelectorAll('.a4-page') as NodeListOf<HTMLElement>;
+  
+  if (pages.length === 0) {
+    throw new Error('No pages found to export');
   }
 
-  // 临时移除阴影和圆角，确保PDF干净
-  const originalBoxShadow = element.style.boxShadow;
-  const originalBorderRadius = element.style.borderRadius;
-  const originalOverflow = element.style.overflow;
-  element.style.boxShadow = 'none';
-  element.style.borderRadius = '0';
-  element.style.overflow = 'visible';
+  console.log(`[PDF Export] Found ${pages.length} pages to export`);
 
-  // 临时调整为自动高度以捕获所有内容
-  const originalHeight = element.style.height;
-  element.style.height = 'auto';
-
-  // 使用 html2canvas 捕获元素
-  const canvas = await html2canvas(element, {
-    scale: 2,
-    useCORS: true,
-    backgroundColor: '#ffffff',
-    logging: false,
-    removeContainer: true,
+  // 创建 PDF 文档
+  // A4 尺寸：794px × 1123px (72 DPI)
+  const pdf = new jsPDF({
+    unit: 'px',
+    format: [794, 1123],
+    compress: true,
   });
 
-  // 恢复原始样式
-  element.style.boxShadow = originalBoxShadow;
-  element.style.borderRadius = originalBorderRadius;
-  element.style.overflow = originalOverflow;
-  element.style.height = originalHeight;
+  for (let i = 0; i < pages.length; i++) {
+    const page = pages[i];
+    const pageContent = page.querySelector('.page-content') as HTMLElement;
+    
+    console.log(`[PDF Export] Capturing page ${i + 1}/${pages.length}`);
 
-  // A4 尺寸配置
-  const imgWidth = 210; // A4 宽度（mm）
-  const pageHeight = 297; // A4 高度（mm）
-  const imgHeight = (canvas.height * imgWidth) / canvas.width;
-  
-  // 创建 PDF
-  const pdf = new jsPDF('p', 'mm', 'a4');
-  
-  // 如果内容高度小于等于一页
-  if (imgHeight <= pageHeight) {
-    const imgData = canvas.toDataURL('image/png');
-    pdf.addImage(imgData, 'PNG', 0, 0, imgWidth, imgHeight);
-  } else {
-    // 内容超过一页，需要分页
-    const pageCanvas = document.createElement('canvas');
-    const pageCtx = pageCanvas.getContext('2d');
+    // 保存原始样式
+    const originalPageStyles = {
+      boxShadow: page.style.boxShadow,
+      borderRadius: page.style.borderRadius,
+      overflow: page.style.overflow,
+    };
     
-    if (!pageCtx) {
-      throw new Error('Canvas context not available');
+    const originalContentStyles = pageContent ? {
+      overflow: pageContent.style.overflow,
+      height: pageContent.style.height,
+    } : null;
+
+    // 临时移除样式，确保完整截图
+    page.style.boxShadow = 'none';
+    page.style.borderRadius = '0';
+    page.style.overflow = 'visible'; // 关键：允许内容溢出以便截图
+    
+    if (pageContent) {
+      pageContent.style.overflow = 'visible';
+      pageContent.style.height = 'auto';
     }
-    
-    // 计算每页的像素高度
-    const pageHeightInPixels = (canvas.width * pageHeight) / imgWidth;
-    const totalPages = Math.ceil(canvas.height / pageHeightInPixels);
-    
-    pageCanvas.width = canvas.width;
-    pageCanvas.height = pageHeightInPixels;
-    
-    for (let page = 0; page < totalPages; page++) {
-      // 清空画布
-      pageCtx.fillStyle = '#ffffff';
-      pageCtx.fillRect(0, 0, pageCanvas.width, pageCanvas.height);
+
+    try {
+      // 等待一小段时间确保样式应用
+      await new Promise(resolve => setTimeout(resolve, 100));
       
-      // 计算当前页的源位置
-      const sourceY = page * pageHeightInPixels;
-      const sourceHeight = Math.min(pageHeightInPixels, canvas.height - sourceY);
+      // 截图当前页面
+      const canvas = await html2canvas(page, {
+        scale: 2, // 高清截图
+        useCORS: true,
+        backgroundColor: '#ffffff',
+        logging: false,
+        removeContainer: true,
+        width: 794,
+        height: 1123,
+        windowWidth: 794,
+        windowHeight: 1123,
+      });
+
+      // 恢复原始样式
+      page.style.boxShadow = originalPageStyles.boxShadow;
+      page.style.borderRadius = originalPageStyles.borderRadius;
+      page.style.overflow = originalPageStyles.overflow;
       
-      // 绘制当前页内容
-      pageCtx.drawImage(
-        canvas,
-        0, sourceY, canvas.width, sourceHeight,
-        0, 0, pageCanvas.width, sourceHeight
-      );
-      
-      const pageImgData = pageCanvas.toDataURL('image/png');
-      
-      if (page > 0) {
+      if (pageContent && originalContentStyles) {
+        pageContent.style.overflow = originalContentStyles.overflow;
+        pageContent.style.height = originalContentStyles.height;
+      }
+
+      const imgData = canvas.toDataURL('image/png');
+
+      // 添加新页（第一页除外）
+      if (i > 0) {
         pdf.addPage();
       }
+
+      // 添加图片到PDF
+      pdf.addImage(imgData, 'PNG', 0, 0, 794, 1123, undefined, 'FAST');
       
-      // 计算实际图片高度（最后一页可能不足一页高度）
-      const actualImgHeight = (sourceHeight * imgWidth) / canvas.width;
-      pdf.addImage(pageImgData, 'PNG', 0, 0, imgWidth, actualImgHeight);
+      console.log(`[PDF Export] Page ${i + 1} added successfully`);
+    } catch (error) {
+      // 恢复样式
+      page.style.boxShadow = originalPageStyles.boxShadow;
+      page.style.borderRadius = originalPageStyles.borderRadius;
+      page.style.overflow = originalPageStyles.overflow;
+      
+      if (pageContent && originalContentStyles) {
+        pageContent.style.overflow = originalContentStyles.overflow;
+        pageContent.style.height = originalContentStyles.height;
+      }
+      
+      console.error(`[PDF Export] Error capturing page ${i + 1}:`, error);
+      throw error;
     }
   }
 
   // 保存 PDF
   pdf.save(`${filename}.pdf`);
+  console.log(`[PDF Export] PDF saved as ${filename}.pdf`);
 };
 
 /** 打印简历 */

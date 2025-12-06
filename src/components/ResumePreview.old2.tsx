@@ -1,7 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { useResumeStore } from '@/store';
 import { ChevronLeftIcon, ChevronRightIcon } from '@heroicons/react/24/solid';
-import MultiPageRenderer from './MultiPageRenderer';
 import Template1 from './templates/Template1';
 import Template2 from './templates/Template2';
 import Template3 from './templates/Template3';
@@ -44,9 +43,11 @@ import Template39 from './templates/Template39';
 import Template40 from './templates/Template40';
 
 const ResumePreview: React.FC = () => {
-  const { template } = useResumeStore();
+  const { template, resumeData } = useResumeStore();
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
+  const [pageBreaks, setPageBreaks] = useState<number[]>([]);
+  const contentRef = useRef<HTMLDivElement>(null);
 
   const renderTemplate = () => {
     switch (template) {
@@ -135,12 +136,124 @@ const ResumePreview: React.FC = () => {
     }
   };
 
-  const handlePagesGenerated = (pageCount: number) => {
-    setTotalPages(pageCount);
-    if (currentPage > pageCount) {
-      setCurrentPage(1);
+  // 新的分页逻辑：记录分页点，不修改 DOM
+  useEffect(() => {
+    const calculatePages = () => {
+      if (!contentRef.current) return;
+      
+      const templateContent = contentRef.current.querySelector('.resume-template-content');
+      if (!templateContent) return;
+
+      const A4_HEIGHT = 1123;
+      const PAGE_MARGIN = 20;
+      const PAGE1_VISIBLE = A4_HEIGHT - PAGE_MARGIN; // 1103px
+      const OTHER_PAGE_VISIBLE = A4_HEIGHT - PAGE_MARGIN * 2; // 1083px
+
+      // 获取所有可能需要分页的元素
+      const elements = Array.from(
+        templateContent.querySelectorAll('*')
+      ).filter((el: Element) => {
+        const element = el as HTMLElement;
+        // 只选择有直接文本内容的元素
+        const hasDirectText = Array.from(element.childNodes).some(
+          node => node.nodeType === Node.TEXT_NODE && node.textContent?.trim().length! > 0
+        );
+        return element.offsetHeight > 0 && hasDirectText;
+      }).map((el) => {
+        const element = el as HTMLElement;
+        
+        // 计算元素相对于容器的位置
+        let offsetTop = 0;
+        let current: HTMLElement | null = element;
+        while (current && current !== templateContent) {
+          offsetTop += current.offsetTop;
+          current = current.offsetParent as HTMLElement;
+        }
+
+        return {
+          element,
+          top: offsetTop,
+          bottom: offsetTop + element.offsetHeight,
+          tag: element.tagName
+        };
+      }).sort((a, b) => a.top - b.top);
+
+      const contentHeight = (templateContent as HTMLElement).scrollHeight;
+      const breaks: number[] = [0];
+      
+      let currentPageStart = 0;
+      let pageIndex = 0;
+
+      while (true) {
+        const pageCapacity = pageIndex === 0 ? PAGE1_VISIBLE : OTHER_PAGE_VISIBLE;
+        const targetEnd = currentPageStart + pageCapacity;
+        
+        if (targetEnd >= contentHeight) {
+          break;
+        }
+
+        let actualBreak = targetEnd;
+        
+        // 查找第一个被 targetEnd 切穿的元素
+        for (const item of elements) {
+          if (item.bottom <= currentPageStart) continue;
+          if (item.top >= targetEnd) break;
+          
+          // 如果元素跨越了 targetEnd
+          if (item.top < targetEnd && item.bottom > targetEnd) {
+            // 将分页点设置为该元素的顶部，整体移到下一页
+            actualBreak = item.top;
+            console.log(`[Pagination] Page ${pageIndex + 1}: Element ${item.tag} crosses boundary at ${targetEnd}. Moving to ${actualBreak}`);
+            break;
+          }
+        }
+        
+        breaks.push(actualBreak);
+        currentPageStart = actualBreak;
+        pageIndex++;
+        
+        // 防止死循环
+        if (actualBreak === breaks[breaks.length - 2]) {
+          console.error('[Pagination] Detected infinite loop, breaking');
+          break;
+        }
+      }
+
+      const pages = breaks.length;
+      console.log(`[Pagination] Total pages: ${pages}, breaks at:`, breaks);
+      
+      setPageBreaks(breaks);
+      setTotalPages(pages);
+      
+      if (currentPage > pages) {
+        setCurrentPage(1);
+      }
+    };
+
+    // 延迟计算，等待内容完全渲染
+    const timer = setTimeout(calculatePages, 800);
+    
+    // 监听窗口大小变化
+    window.addEventListener('resize', calculatePages);
+    
+    // 使用 ResizeObserver 监听内容变化
+    const resizeObserver = new ResizeObserver(() => {
+      calculatePages();
+    });
+    
+    if (contentRef.current) {
+      const templateContent = contentRef.current.querySelector('.resume-template-content');
+      if (templateContent) {
+        resizeObserver.observe(templateContent);
+      }
     }
-  };
+    
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener('resize', calculatePages);
+      resizeObserver.disconnect();
+    };
+  }, [template, resumeData]);
 
   const handlePrevPage = () => {
     if (currentPage > 1) {
@@ -157,6 +270,15 @@ const ResumePreview: React.FC = () => {
   const handlePageClick = (page: number) => {
     setCurrentPage(page);
   };
+
+  // 计算当前页的 transform 和 viewport
+  const currentStart = pageBreaks[currentPage - 1] || 0;
+  const currentEnd = currentPage < totalPages ? pageBreaks[currentPage] : (contentRef.current?.querySelector('.resume-template-content') as HTMLElement)?.scrollHeight || 1123;
+  
+  const pageContentHeight = currentEnd - currentStart;
+  // 第一页：内容高度 + 0（无顶部边距）
+  // 后续页：内容高度 + 20px（顶部边距）
+  const viewportHeight = currentPage > 1 ? pageContentHeight + 20 : pageContentHeight;
 
   return (
     <div className="space-y-6">
@@ -211,12 +333,52 @@ const ResumePreview: React.FC = () => {
         </div>
       )}
 
-      {/* 简历内容 - 多页面渲染 */}
+      {/* 简历内容 - 分页显示 */}
       <div className="relative flex justify-center">
-        <div className="resume-preview-container">
-          <MultiPageRenderer onPagesGenerated={handlePagesGenerated}>
-            {renderTemplate()}
-          </MultiPageRenderer>
+        <div 
+          className="relative bg-white shadow-2xl rounded-lg overflow-hidden"
+          style={{
+            width: '794px',
+            height: '1123px',
+          }}
+        >
+          {/* 第2页及以后添加顶部padding */}
+          {currentPage > 1 && (
+            <div 
+              className="absolute top-0 left-0 right-0 bg-white pointer-events-none z-10"
+              style={{ height: '20px' }}
+            />
+          )}
+          
+          <div 
+            className="resume-preview animate-fade-in w-full overflow-hidden"
+            style={{
+              height: `${viewportHeight}px`
+            }}
+          >
+            <div
+              ref={contentRef}
+              style={{
+                transform: `translateY(calc(-${pageBreaks[currentPage - 1] || 0}px + ${currentPage > 1 ? '20px' : '0px'}))`,
+                transition: 'transform 0.3s ease-in-out',
+                paddingTop: currentPage > 1 ? '20px' : '0',
+                paddingBottom: '20px',
+              }}
+            >
+              {renderTemplate()}
+            </div>
+          </div>
+          
+          {/* 所有页面添加底部padding */}
+          <div 
+            className="absolute bottom-0 left-0 right-0 bg-white pointer-events-none z-10"
+            style={{ height: '20px' }}
+          />
+          
+          {/* 页面指示水印 */}
+          <div className="absolute bottom-4 right-4 bg-black/5 backdrop-blur-sm px-3 py-1 rounded-full text-xs text-gray-400 pointer-events-none z-20">
+            Page {currentPage}
+          </div>
         </div>
       </div>
 
@@ -230,23 +392,6 @@ const ResumePreview: React.FC = () => {
           </div>
         </div>
       )}
-      
-      <style>{`
-        .resume-preview-container {
-          position: relative;
-        }
-        
-        .resume-preview-container .multi-page-container {
-          display: flex;
-          flex-direction: column;
-          gap: 20px;
-        }
-        
-        .resume-preview-container .a4-page {
-          box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
-          border-radius: 8px;
-        }
-      `}</style>
     </div>
   );
 };
