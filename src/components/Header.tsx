@@ -59,12 +59,18 @@ const Header: React.FC = () => {
   };
 
   const handleDownloadPDF = async () => {
+    if (isLoading) return;
     setIsLoading(true);
+    const toastId = toast.loading('正在准备导出...');
+    
     try {
-      await downloadPDF('resume');
-      toast.success(t('message.downloadSuccess'));
+      await downloadPDF('resume', (current, total) => {
+        toast.loading(`正在处理第 ${current} / ${total} 页...`, { id: toastId });
+      });
+      toast.success(t('message.downloadSuccess'), { id: toastId });
     } catch (error) {
-      toast.error('下载失败');
+      console.error('PDF Download Error:', error);
+      toast.error(`Download failed: ${error instanceof Error ? error.message : 'Unknown error'}`, { id: toastId, duration: 5000 });
     } finally {
       setIsLoading(false);
     }

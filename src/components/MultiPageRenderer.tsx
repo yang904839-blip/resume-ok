@@ -7,20 +7,18 @@ interface MultiPageRendererProps {
 }
 
 /**
- * 多页面渲染器 (True Pagination Version)
+ * 多页面渲染器 (Multi-Column Support Version)
  * 
  * 核心逻辑：
- * 1. 在隐藏容器中渲染完整简历
- * 2. 遍历 DOM 节点，将其物理移动（克隆）到 A4Page 容器中
- * 3. 智能处理跨页：
- *    - 如果一个元素（如段落）能放入当前页，则放入
- *    - 如果放不下，则放入下一页
- *    - 如果是容器元素（如 Section），则在两页都创建容器，将其子元素分散
+ * 1. 遍历 DOM 树
+ * 2. 检测 Flex/Grid 容器
+ * 3. 对于普通容器：串行处理子元素（Child B 接在 Child A 后面）
+ * 4. 对于 Flex/Grid 容器：并行处理子元素（Child A 和 Child B 都从容器起始位置开始）
+ * 5. 动态维护每一页的 DOM 结构，确保跨页时容器结构完整
  */
 const MultiPageRenderer: React.FC<MultiPageRendererProps> = ({ children, onPagesGenerated }) => {
   const [pages, setPages] = useState<React.ReactNode[][]>([]);
   const measureRef = useRef<HTMLDivElement>(null);
-  // 用于强制重新渲染
   const [renderTrigger, setRenderTrigger] = useState(0);
 
   useEffect(() => {
@@ -30,248 +28,242 @@ const MultiPageRenderer: React.FC<MultiPageRendererProps> = ({ children, onPages
       const sourceRoot = measureRef.current.firstElementChild as HTMLElement;
       if (!sourceRoot) return;
 
-      console.log('[MultiPageRenderer] Starting content distribution...');
+      console.log('[MultiPageRenderer] Starting content distribution (Multi-Column)...');
 
       const PAGE1_HEIGHT = 1103; // 1123 - 20
       const OTHER_PAGE_HEIGHT = 1083; // 1123 - 20 - 20
 
       const newPages: HTMLElement[] = [];
       
-      // 创建第一页
-      let currentPageIndex = 0;
-      let currentPageContent = document.createElement('div');
-      currentPageContent.className = 'resume-content-page';
-      // 保持原始根节点的类名，确保样式生效
-      currentPageContent.className = sourceRoot.className; 
-      // 清除可能影响布局的样式
-      currentPageContent.style.height = '100%';
-      currentPageContent.style.overflow = 'hidden';
-      
-      let currentHeight = 0;
-      const pageLimit = () => currentPageIndex === 0 ? PAGE1_HEIGHT : OTHER_PAGE_HEIGHT;
+      // 初始化第一页
+      const createPage = (index: number) => {
+        const page = document.createElement('div');
+        page.className = sourceRoot.className; // 保持根样式
+        page.style.height = '100%';
+        page.style.overflow = 'hidden';
+        // 确保根容器也是 flex/grid 如果原始就是的话（虽然通常是 block）
+        // 但这里我们只用它作为 page root，具体的布局由子元素决定
+        return page;
+      };
 
-      newPages.push(currentPageContent);
+      newPages.push(createPage(0));
 
-      // 递归处理节点
-      const processNode = (node: HTMLElement, targetContainer: HTMLElement) => {
-        // 如果是文本节点或非元素节点，直接克隆
-        if (node.nodeType !== 1) {
-          targetContainer.appendChild(node.cloneNode(true));
-          return;
-        }
+      const getPageLimit = (pageIndex: number) => pageIndex === 0 ? PAGE1_HEIGHT : OTHER_PAGE_HEIGHT;
 
-        const element = node as HTMLElement;
-        const tagName = element.tagName.toLowerCase();
-
-        // 测量当前元素的高度（包括 margin）
-        // 注意：这里我们只是估算，因为元素还没放入新容器，样式可能略有不同
-        // 但由于我们克隆了类名，且宽度固定，高度应该一致
-        const rect = element.getBoundingClientRect();
-        const style = window.getComputedStyle(element);
+      // 核心递归函数
+      // 返回：该节点处理完毕后，最终到达的 { pageIndex, currentHeight }
+      // 对于 Flex 容器，返回的是所有列中最长的那一列的结束状态
+      const processNode = (
+        node: HTMLElement, 
+        startPageIndex: number, 
+        startHeight: number, 
+        parentPath: HTMLElement[]
+      ): { pageIndex: number, currentHeight: number } => {
+        
+        // 1. 测量当前节点（作为整体）的高度
+        // 注意：如果是容器，这个高度可能包含 padding/border
+        const style = window.getComputedStyle(node);
+        const isFlex = style.display === 'flex' || style.display === 'inline-flex';
+        const isGrid = style.display === 'grid' || style.display === 'inline-grid';
+        const isContainer = isFlex || isGrid || node.children.length > 0;
+        
+        // 原子元素判断（不拆分）
+        const tagName = node.tagName.toLowerCase();
+        const isAtomic = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'li', 'img', 'span', 'a', 'strong', 'em', 'svg', 'button', 'input'].includes(tagName);
+        
+        // 获取节点自身的高度（margin box）
+        // 这里的测量可能不准，因为还没有放入新容器。
+        // 但对于原子元素，我们可以直接测量 measureRef 里的源节点。
+        const rect = node.getBoundingClientRect();
         const marginTop = parseFloat(style.marginTop);
         const marginBottom = parseFloat(style.marginBottom);
-        const elementHeight = rect.height + marginTop + marginBottom;
+        const nodeHeight = rect.height + marginTop + marginBottom;
 
-        // 策略 1: 如果元素足够小，且能完全放入当前页，则直接放入
-        // 这里的"足够小"是指不是那种巨大的容器（比如整个简历的根容器）
-        // 我们假设 h1-h6, p, li, span, img 等是原子元素，不应该被拆分
-        const isAtomic = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'li', 'img', 'span', 'a', 'strong', 'em'].includes(tagName);
-        
-        // 检查是否需要换页
-        // 如果是原子元素，且放不下 -> 换页
-        // 如果是容器元素，且放不下 -> 尝试拆分
-        
-        if (currentHeight + elementHeight <= pageLimit()) {
-          // 能放下，直接克隆整个子树
-          targetContainer.appendChild(element.cloneNode(true));
-          currentHeight += elementHeight;
-        } else {
-          // 放不下
-          if (isAtomic) {
-            // 原子元素，整体移到下一页
-            // 创建新页
-            currentPageIndex++;
-            const newPage = document.createElement('div');
-            newPage.className = sourceRoot.className; // 保持样式上下文
-            newPage.style.height = '100%';
-            newPage.style.overflow = 'hidden';
-            newPages.push(newPage);
-            
-            currentPageContent = newPage;
-            currentHeight = 0;
-            
-            // 放入新页
-            currentPageContent.appendChild(element.cloneNode(true));
-            currentHeight += elementHeight;
-            
-            // 注意：这里我们需要更新 targetContainer 的引用吗？
-            // 递归调用中，targetContainer 是上一层的容器。
-            // 如果我们在这里换页了，意味着当前原子元素被移动到了新页的根容器下。
-            // 这可能会破坏 DOM 结构（比如 li 脱离了 ul）。
-            // 这是一个复杂点。
-            
-            // 修正策略：
-            // 我们不能简单地把 li 扔到新页的根目录下，它必须在 ul 里。
-            // 所以，如果父容器跨页了，父容器必须在新页重建。
+        // --- Case 1: 原子元素 ---
+        if (isAtomic || !isContainer) {
+          // 检查是否能放入当前页
+          if (startHeight + nodeHeight <= getPageLimit(startPageIndex)) {
+            // 能放下
+            const targetParent = getTargetParentInPage(parentPath, newPages[startPageIndex]);
+            targetParent.appendChild(node.cloneNode(true));
+            return { pageIndex: startPageIndex, currentHeight: startHeight + nodeHeight };
           } else {
-            // 容器元素，需要拆分
-            // 1. 在当前页创建容器副本（不带子元素）
-            const currentContainerClone = element.cloneNode(false) as HTMLElement;
-            targetContainer.appendChild(currentContainerClone);
+            // 放不下 -> 换页
+            const nextPageIndex = startPageIndex + 1;
+            // 确保新页存在
+            while (newPages.length <= nextPageIndex) {
+              newPages.push(createPage(newPages.length));
+            }
             
-            // 2. 加上当前容器自身的 padding/border 高度
-            // 简化处理，暂不精确计算容器自身的装饰高度，主要关注内容
-            
-            // 3. 遍历子元素
-            const children = Array.from(element.childNodes);
-            
-            // 这里的逻辑有点 tricky：我们需要在递归中维护"当前正在写入的容器"
-            // 如果发生了换页，我们需要在新页重建当前容器的层级结构
-            
-            // 让我们换一种思路：扁平化流式处理？不，那样会丢失样式结构。
-            // 必须维护结构。
-            
-            // 重新设计递归：
-            // processNode 接收一个 node，把它"流"入 pages。
-            // 如果 node 是容器，它会创建 clone，然后 processChildren。
-            // 如果 processChildren 触发了换页，它会返回"我换页了"，
-            // 那么父级需要在新页也创建一个 clone 来接住剩下的孩子。
+            const targetParent = getTargetParentInPage(parentPath, newPages[nextPageIndex]);
+            targetParent.appendChild(node.cloneNode(true));
+            // 新页起始高度为 0 + nodeHeight
+            return { pageIndex: nextPageIndex, currentHeight: nodeHeight };
           }
         }
-      };
-      
-      // --- 采用新的"双层遍历"策略 ---
-      // 1. 顶层通常是 Sections。我们先按 Section 粒度处理。
-      // 2. 如果 Section 放不下，再深入 Section 内部处理。
-      
-      const processChildren = (nodes: NodeListOf<ChildNode>, parentPath: HTMLElement[]) => {
-        for (const node of Array.from(nodes)) {
-          if (node.nodeType !== 1) continue; // 忽略非元素节点（如纯换行文本）
-          const element = node as HTMLElement;
+
+        // --- Case 2: 容器元素 ---
+        
+        // 首先，在当前页创建容器壳
+        // 注意：容器本身可能有 padding/border，这些也占空间
+        // 简化处理：我们先创建壳，然后让子元素去填充
+        // 如果容器本身有高度（比如 min-height），这会比较复杂。我们假设高度由内容撑开。
+        
+        // 在当前页创建壳
+        let currentPageIndex = startPageIndex;
+        let currentHeight = startHeight;
+        
+        // 确保当前页存在
+        while (newPages.length <= currentPageIndex) {
+          newPages.push(createPage(newPages.length));
+        }
+        
+        // 将当前节点（壳）加入当前页
+        // 注意：这里我们不 cloneNode(true)，只 clone 壳
+        // 并且我们需要把这个壳加入到 parentPath 中，传给子元素
+        const containerClone = node.cloneNode(false) as HTMLElement;
+        const targetParent = getTargetParentInPage(parentPath, newPages[currentPageIndex]);
+        targetParent.appendChild(containerClone);
+        
+        // 新的 parentPath
+        const newParentPath = [...parentPath, node]; // 使用原始 node 作为标识
+        
+        // 处理子元素
+        const children = Array.from(node.children) as HTMLElement[];
+        
+        if (isFlex || isGrid) {
+          // --- 并行处理 (Parallel Layout) ---
+          let maxPageIndex = currentPageIndex;
+          let maxEndHeight = currentHeight;
           
-          const rect = element.getBoundingClientRect();
-          const style = window.getComputedStyle(element);
-          const height = rect.height + parseFloat(style.marginTop) + parseFloat(style.marginBottom);
+          // 对于 Flex/Grid，所有子元素都从容器的起始位置开始
+          // 即：它们共享相同的 startPageIndex 和 startHeight
+          // 但它们会分别延伸
           
-          // 检查是否能放入当前页
-          if (currentHeight + height <= pageLimit()) {
-            // 能放下：找到当前页对应的父容器，append
-            const targetParent = getTargetParentInCurrentPage(parentPath, newPages[currentPageIndex]);
-            targetParent.appendChild(element.cloneNode(true));
-            currentHeight += height;
-          } else {
-            // 放不下
-            // 1. 如果高度超过一整页，或者它是一个容器，尝试拆分
-            // 2. 否则，换页
+          for (const child of children) {
+            // 每个子元素都从容器的起始状态开始
+            // 注意：这里有个微小的修正，如果是 flex-direction: column，其实还是串行的
+            // 只有 row 才是并行的。
+            // 简单起见，我们假设 flex 都是并行的（即使是 column，并行处理通常也没错，只是高度会重叠？）
+            // 不，如果是 column，必须串行。
             
-            // 简单判断：如果是容器且高度很大，拆分
-            const isContainer = ['div', 'ul', 'ol', 'section', 'article'].includes(element.tagName.toLowerCase());
+            const isRow = style.flexDirection.includes('row') || isGrid; // Grid 默认视为二维/并行
             
-            if (isContainer && element.children.length > 0) {
-              // 拆分容器：
-              // 在当前页创建容器壳
-              const targetParent = getTargetParentInCurrentPage(parentPath, newPages[currentPageIndex]);
-              const containerClone = element.cloneNode(false) as HTMLElement;
-              targetParent.appendChild(containerClone);
+            if (isRow) {
+              // 并行：每个子元素从容器起始点开始
+              const result = processNode(child, currentPageIndex, currentHeight, newParentPath);
               
-              // 增加一点容器自身的 padding 高度估算（可选）
-              
-              // 递归处理子元素
-              // 注意：parentPath 需要加入当前元素
-              processChildren(element.childNodes, [...parentPath, element]);
+              if (result.pageIndex > maxPageIndex) {
+                maxPageIndex = result.pageIndex;
+                maxEndHeight = result.currentHeight;
+              } else if (result.pageIndex === maxPageIndex) {
+                maxEndHeight = Math.max(maxEndHeight, result.currentHeight);
+              }
             } else {
-              // 整体换页
-              currentPageIndex++;
-              currentHeight = 0;
-              
-              const newPage = document.createElement('div');
-              newPage.className = sourceRoot.className;
-              newPages.push(newPage);
-              
-              // 在新页重建父级路径
-              const targetParent = getTargetParentInCurrentPage(parentPath, newPage);
-              targetParent.appendChild(element.cloneNode(true));
-              currentHeight += height;
+              // 串行 (Flex Column)：累加高度
+              // 下一个子元素从上一个子元素的结束位置开始
+              const result = processNode(child, maxPageIndex, maxEndHeight, newParentPath);
+              maxPageIndex = result.pageIndex;
+              maxEndHeight = result.currentHeight;
             }
           }
+          
+          return { pageIndex: maxPageIndex, currentHeight: maxEndHeight };
+          
+        } else {
+          // --- 串行处理 (Block Layout) ---
+          let pageIndex = currentPageIndex;
+          let height = currentHeight;
+          
+          for (const child of children) {
+            const result = processNode(child, pageIndex, height, newParentPath);
+            pageIndex = result.pageIndex;
+            height = result.currentHeight;
+          }
+          
+          return { pageIndex, currentHeight: height };
         }
       };
 
-      // 辅助函数：在指定页面中找到或重建父级路径
-      const getTargetParentInCurrentPage = (path: HTMLElement[], pageRoot: HTMLElement): HTMLElement => {
+      // 辅助函数：在指定页面中找到对应的父级容器
+      // 如果不存在，则创建（重建层级结构）
+      const getTargetParentInPage = (path: HTMLElement[], pageRoot: HTMLElement): HTMLElement => {
         let current = pageRoot;
-        // path[0] 是 root 的直接子级... 不，path 应该是从 root 下一层开始
-        // 我们的 path 包含了正在处理的容器链
         
-        // 实际上，我们需要在 pageRoot 下重建 path 中的每一个节点（如果还没重建的话）
-        // 但这里有个问题：如何对应？
-        // 我们可以给每个原始节点一个 ID，或者利用 path 的层级。
+        // path 包含了从 sourceRoot 的下一级开始的路径
+        // 比如 sourceRoot -> div.section -> ul
+        // path = [div.section, ul]
         
-        // 简化：path 是 [div.section, ul]
-        // 我们需要在 pageRoot 下找 div.section -> ul
-        // 如果找不到，就创建。
+        // 我们需要在 pageRoot 下找到对应的 div.section -> ul
+        // 这里的对应关系通过原始节点的引用或者特征来判断
         
-        // 为了避免混淆同名元素，我们可以利用 WeakMap 或者给原始元素打标。
-        // 这里用简单的层级重建。
-        
-        // 修正：由于我们是顺序遍历，如果当前页是最新的，且我们正在处理 path，
-        // 那么 path 对应的克隆节点应该是当前页的最后一个分支。
+        // 修正：path 中的第一个元素应该是 sourceRoot 的子元素
+        // 但我们在 processNode 中传入的 parentPath 是空的，然后 push 了 node
+        // 所以 path[0] 就是当前正在处理的顶层节点
         
         for (const originalNode of path) {
-          // 检查 current 的最后一个子元素是否对应 originalNode
-          // 这里比较 tag 和 class
-          let lastChild = current.lastElementChild as HTMLElement;
+          // 在 current 的子元素中查找是否已经创建了 originalNode 的克隆
+          // 这里我们需要一种可靠的方式来关联。
+          // 简单方式：给 originalNode 加个临时 ID？不行，React 会重绘。
+          // 我们可以比较 tagName 和 className，以及顺序？
+          // 或者，利用 WeakMap 存储 originalNode -> clonedNodeInPage 的映射？
+          // 是的，WeakMap 是最好的。
+          // map.get(originalNode) -> { pageIndex: clonedNode }
           
-          // 这里的判断条件可能不够严谨，但在顺序写入的场景下通常有效
-          // 我们假设：只要我们还在处理这个 path，那么 current 的最后一个子元素就是 path 对应的那一层
-          // 除非我们刚换页，那时候 lastChild 是 null 或者不匹配
+          // 但这里我们没有全局 Map。
+          // 让我们尝试简单的查找：查找 current 的最后一个子元素，看是否匹配
+          // 因为我们是顺序处理的，所以正在处理的路径通常就在最后
           
-          const isMatch = lastChild && 
-                          lastChild.tagName === originalNode.tagName && 
-                          lastChild.className === originalNode.className;
-                          
-          if (isMatch) {
-            current = lastChild;
-          } else {
-            // 不匹配（可能是刚换页，或者是新的一层），创建克隆
+          let found = false;
+          const children = Array.from(current.children) as HTMLElement[];
+          // 从后往前找，通常就在最后一个
+          for (let i = children.length - 1; i >= 0; i--) {
+            const child = children[i];
+            // 比较特征
+            if (child.tagName === originalNode.tagName && 
+                child.className === originalNode.className &&
+                // 还可以比较 style
+                child.getAttribute('style') === originalNode.getAttribute('style')) {
+              current = child;
+              found = true;
+              break;
+            }
+          }
+          
+          if (!found) {
+            // 没找到，创建新的克隆
             const clone = originalNode.cloneNode(false) as HTMLElement;
             current.appendChild(clone);
             current = clone;
           }
         }
+        
         return current;
       };
 
-      // 开始遍历
-      // sourceRoot 的子元素是第一层
-      processChildren(sourceRoot.childNodes, []);
+      // 开始处理
+      // 这里的 sourceRoot 本身就是 pageRoot 的内容，所以我们处理 sourceRoot 的子元素
+      const children = Array.from(sourceRoot.children) as HTMLElement[];
+      let pageIndex = 0;
+      let currentHeight = 0;
+      
+      // 顶层通常是 Block 布局，串行处理
+      for (const child of children) {
+        const result = processNode(child, pageIndex, currentHeight, []);
+        pageIndex = result.pageIndex;
+        currentHeight = result.currentHeight;
+      }
 
-      // 转换 newPages 为 React Nodes
-      const pageNodes = newPages.map((pageEl, index) => {
-        return (
-          <div 
-            key={index}
-            dangerouslySetInnerHTML={{ __html: pageEl.innerHTML }} 
-            className={pageEl.className}
-          />
-        );
-      });
-      
-      // 这种方式会导致 React 事件失效，但对于预览和 PDF 导出（静态展示）是完全可以接受的。
-      // 且能完美保留样式。
-      
-      // 包装成二维数组以适配之前的接口（虽然这里其实是一维的 Page 内容）
-      // 我们调整一下 state 结构
+      // 转换结果
       setPages(newPages.map(p => [p])); 
       onPagesGenerated?.(newPages.length);
     };
 
-    // 延迟执行以确保 DOM 渲染
     const timer = setTimeout(distributeContent, 100);
     return () => clearTimeout(timer);
   }, [children, renderTrigger]);
 
-  // 监听窗口大小变化重新计算
+  // Resize 监听
   useEffect(() => {
     const handleResize = () => setRenderTrigger(prev => prev + 1);
     window.addEventListener('resize', handleResize);
@@ -280,14 +272,13 @@ const MultiPageRenderer: React.FC<MultiPageRendererProps> = ({ children, onPages
 
   return (
     <>
-      {/* 隐藏的测量容器：渲染完整的 React 组件树 */}
       <div
         ref={measureRef}
         style={{
           position: 'absolute',
           left: '-9999px',
           top: 0,
-          width: '794px', // A4 宽度
+          width: '794px',
           visibility: 'hidden',
         }}
       >
@@ -296,14 +287,9 @@ const MultiPageRenderer: React.FC<MultiPageRendererProps> = ({ children, onPages
         </div>
       </div>
 
-      {/* 实际显示的页面 */}
       <div className="multi-page-container">
         {pages.map((pageContent, index) => (
           <A4Page key={index} isFirstPage={index === 0} pageIndex={index}>
-             {/* 这里我们需要渲染 HTML 字符串 */}
-             {/* 由于 pageContent 是 HTMLElement，我们需要取其 innerHTML */}
-             {/* 但为了性能和正确性，最好是直接把 HTMLElement 挂载上去？React 不支持直接挂载 DOM 对象 */}
-             {/* 所以 dangerouslySetInnerHTML 是最简单的方案 */}
              <div 
                className="resume-template-content"
                dangerouslySetInnerHTML={{ 
